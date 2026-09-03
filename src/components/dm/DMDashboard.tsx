@@ -1,6 +1,6 @@
 import React from 'react';
 import { Monster, Character } from '../../types/rpg';
-import { Eye, EyeOff, PlusCircle, Volume2, ShieldAlert, Sparkles, RefreshCw } from 'lucide-react';
+import { Eye, EyeOff, PlusCircle, Volume2, ShieldAlert, Sparkles, RefreshCw, UserX } from 'lucide-react';
 
 interface DMDashboardProps {
   characters: Character[];
@@ -10,6 +10,8 @@ interface DMDashboardProps {
   onStartEncounter: () => void;
   onBroadcastNarration: (text: string) => void;
   fogRevealedAll: boolean;
+  onRemoveCharacter?: (id: string) => void;
+  onResetRoom?: () => void;
 }
 
 export const DMDashboard: React.FC<DMDashboardProps> = ({
@@ -20,6 +22,8 @@ export const DMDashboard: React.FC<DMDashboardProps> = ({
   onStartEncounter,
   onBroadcastNarration,
   fogRevealedAll,
+  onRemoveCharacter,
+  onResetRoom,
 }) => {
   const [narrationInput, setNarrationInput] = React.useState('');
 
@@ -75,9 +79,25 @@ export const DMDashboard: React.FC<DMDashboardProps> = ({
           
           {/* Active Players Party Vitals */}
           <div className="p-5 bg-[#151518] border border-[#3c3c44] rounded-lg shadow-xl space-y-4">
-            <h3 className="font-serif font-bold text-sm text-[#c5a059] uppercase tracking-wider">
-              Adventuring Party Status ({characters.length} Heroes)
-            </h3>
+            <div className="flex items-center justify-between">
+              <h3 className="font-serif font-bold text-sm text-[#c5a059] uppercase tracking-wider">
+                Adventuring Party Status ({characters.length} Heroes)
+              </h3>
+              {onResetRoom && (
+                <button
+                  onClick={() => {
+                    if (window.confirm('Reset party to default archetypes and clear all inactive/ghost tokens from room?')) {
+                      onResetRoom();
+                    }
+                  }}
+                  title="Reset party and clear ghost tokens"
+                  className="text-[10px] font-mono uppercase px-2.5 py-1 bg-[#1a1a1d] hover:bg-amber-950/70 text-[#c5a059] border border-[#3c3c44] hover:border-amber-600/60 rounded flex items-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>Reset Party</span>
+                </button>
+              )}
+            </div>
             <div className="space-y-2">
               {characters.map(char => (
                 <div 
@@ -106,7 +126,7 @@ export const DMDashboard: React.FC<DMDashboardProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-4 font-mono text-xs">
+                  <div className="flex items-center gap-3 font-mono text-xs">
                     <div>
                       HP: <strong className="text-red-400">{char.hp}/{char.maxHp}</strong>
                     </div>
@@ -116,6 +136,21 @@ export const DMDashboard: React.FC<DMDashboardProps> = ({
                     <div>
                       AC: <strong className="text-[#c5a059]">{char.ac}</strong>
                     </div>
+
+                    {onRemoveCharacter && (
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`Kick token ${char.name} (@${char.ownerName || 'Companion'}) from campaign room?`)) {
+                            onRemoveCharacter(char.id);
+                          }
+                        }}
+                        title={`Remove ${char.name} token from campaign`}
+                        className="ml-2 px-2 py-1 bg-red-950/60 hover:bg-red-900 border border-red-800/40 text-red-300 rounded text-[10px] font-mono uppercase cursor-pointer flex items-center gap-1 transition-colors"
+                      >
+                        <UserX className="w-3 h-3 text-red-400" />
+                        <span>Kick</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Character, Monster, MapTile, Quest, CombatSession, ChatMessage, GameEvent, Item, UserRole, UserProfile } from '../../types/rpg';
+import { Character, Monster, MapTile, Quest, CombatSession, ChatMessage, GameEvent, Item, UserRole, UserProfile, Campaign } from '../../types/rpg';
+import { DUNGEON_THEMES } from '../../game/mapGenerator';
 import { GameMap } from './GameMap';
 import { CombatPanel } from './CombatPanel';
 import { QuestPanel } from './QuestPanel';
@@ -15,7 +16,7 @@ import {
   RollCalculation,
   parseDiceNotation
 } from '../../game/engine';
-import { Dices, Shield, Sword, Sparkles, RefreshCw, Eye, Footprints, DoorOpen, Users } from 'lucide-react';
+import { Dices, Shield, Sword, Sparkles, RefreshCw, Eye, Footprints, DoorOpen, Users, UserX, RotateCcw, ChevronDown, Compass } from 'lucide-react';
 
 interface VirtualTabletopProps {
   characters: Character[];
@@ -30,6 +31,7 @@ interface VirtualTabletopProps {
   chatMessages: ChatMessage[];
   gameEvents: GameEvent[];
   currentRole: UserRole;
+  campaign?: Campaign;
   onUpdateCharacters: (chars: Character[]) => void;
   onUpdateMonsters: (monsters: Monster[]) => void;
   onUpdateTiles: (tiles: MapTile[]) => void;
@@ -37,6 +39,9 @@ interface VirtualTabletopProps {
   onUpdateCombat: (combat: CombatSession) => void;
   onAddChatMessage: (msg: ChatMessage) => void;
   onAddGameEvent: (evt: GameEvent) => void;
+  onRemoveCharacter?: (id: string) => void;
+  onResetRoom?: () => void;
+  onResetBoard?: (themeId?: string) => void;
 }
 
 export const VirtualTabletop: React.FC<VirtualTabletopProps> = ({
@@ -52,6 +57,7 @@ export const VirtualTabletop: React.FC<VirtualTabletopProps> = ({
   chatMessages,
   gameEvents,
   currentRole,
+  campaign,
   onUpdateCharacters,
   onUpdateMonsters,
   onUpdateTiles,
@@ -59,7 +65,11 @@ export const VirtualTabletop: React.FC<VirtualTabletopProps> = ({
   onUpdateCombat,
   onAddChatMessage,
   onAddGameEvent,
+  onRemoveCharacter,
+  onResetRoom,
+  onResetBoard,
 }) => {
+  const [showBoardMenu, setShowBoardMenu] = useState(false);
   const [selectedMonsterId, setSelectedMonsterId] = useState<string | null>(monsters[0]?.id || null);
   const [showSheet, setShowSheet] = useState(false);
   const [inspectedCharacterId, setInspectedCharacterId] = useState<string>(myCharacterId);
@@ -67,8 +77,12 @@ export const VirtualTabletop: React.FC<VirtualTabletopProps> = ({
   const [isRolling, setIsRolling] = useState(false);
   const [interactingCharacter, setInteractingCharacter] = useState<Character | null>(null);
 
-  // Strictly bind control to the user's hero
-  const activeChar = characters.find(c => c.id === myCharacterId) || characters[0];
+  // Strictly bind control to the user's hero with multi-stage fallback
+  const activeChar = characters.find(c => c.id === myCharacterId) 
+    || (userProfile?.uid && characters.find(c => c.ownerId === userProfile.uid))
+    || (userProfile?.displayName && characters.find(c => c.ownerName?.toLowerCase() === userProfile.displayName.toLowerCase()))
+    || characters.find(c => !c.ownerId)
+    || characters[0];
   const inspectedChar = characters.find(c => c.id === inspectedCharacterId) || activeChar;
   const selectedMonster = monsters.find(m => m.id === selectedMonsterId) || null;
 
@@ -424,13 +438,29 @@ export const VirtualTabletop: React.FC<VirtualTabletopProps> = ({
       
       {/* Top Party Avatar Roster */}
       <div className="flex flex-wrap items-center justify-between p-3 bg-[#151518] border border-[#3c3c44] rounded-lg shadow-lg gap-3">
-        <div className="flex items-center gap-3">
-          <span className="text-xs uppercase font-serif font-bold text-[#c5a059] tracking-wider">
-            Party Adventurers:
-          </span>
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="text-xs uppercase font-serif font-bold text-[#c5a059] tracking-wider">
+              Party Adventurers:
+            </span>
+            {onResetRoom && (
+              <button
+                onClick={() => {
+                  if (window.confirm('Reset party to default archetypes and clear inactive/ghost character tokens?')) {
+                    onResetRoom();
+                  }
+                }}
+                title="Reset party and clear ghost tokens from earlier sessions"
+                className="text-[10px] font-mono uppercase px-2 py-0.5 bg-[#1a1a1d] hover:bg-amber-950/60 text-[#c5a059] border border-[#3c3c44] hover:border-amber-600/60 rounded flex items-center gap-1 cursor-pointer transition-colors"
+              >
+                <RefreshCw className="w-2.5 h-2.5" />
+                <span>Reset Party</span>
+              </button>
+            )}
+          </div>
           <div className="flex items-center gap-2 flex-wrap">
             {characters.map(char => {
-              const isMyHero = char.id === myCharacterId;
+              const isMyHero = char.id === myCharacterId || char.id === activeChar.id;
               return (
                 <div
                   key={char.id}
@@ -487,6 +517,20 @@ export const VirtualTabletop: React.FC<VirtualTabletopProps> = ({
                         <Eye className="w-2.5 h-2.5" />
                         <span>Inspect</span>
                       </button>
+                      {onRemoveCharacter && (
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`Dismiss ${char.name} (@${char.ownerName || 'Companion'}) token from campaign room?`)) {
+                              onRemoveCharacter(char.id);
+                            }
+                          }}
+                          title={`Dismiss ghost/inactive token ${char.name} (@${char.ownerName || 'Companion'})`}
+                          className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-red-950/70 hover:bg-red-900 text-red-300 border border-red-800/40 cursor-pointer flex items-center gap-1 transition-colors"
+                        >
+                          <UserX className="w-2.5 h-2.5 text-red-400" />
+                          <span>Dismiss</span>
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -518,7 +562,7 @@ export const VirtualTabletop: React.FC<VirtualTabletopProps> = ({
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <h3 className="font-serif font-bold text-base text-[#e0d7c6] uppercase tracking-wider">
-                    The Whispering Halls (Level 1)
+                    {campaign?.currentArea || 'The Whispering Catacombs (Floor 1)'}
                   </h3>
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-400 border border-emerald-600/40 flex items-center gap-1">
                     <span className="text-emerald-500/70 font-semibold">Player:</span>
@@ -530,7 +574,71 @@ export const VirtualTabletop: React.FC<VirtualTabletopProps> = ({
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 relative">
+                {onResetBoard && (
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowBoardMenu(!showBoardMenu)}
+                      className="px-2.5 py-1.5 bg-[#1f1f26] hover:bg-[#2c2c36] text-[#c5a059] border border-[#3c3c44] hover:border-[#c5a059]/70 rounded text-xs font-serif uppercase tracking-wider flex items-center gap-1.5 cursor-pointer transition-colors shadow-sm"
+                      title="Reset all board tiles, spawn fresh monsters, and create a new dungeon"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+                      <span className="hidden sm:inline">Reset Board &amp; Create New</span>
+                      <span className="sm:hidden">New Board</span>
+                      <ChevronDown className="w-3 h-3 text-[#c5a059]/70" />
+                    </button>
+
+                    {showBoardMenu && (
+                      <div className="absolute right-0 mt-1.5 w-72 bg-[#151518] border border-[#4a4a55] rounded-lg shadow-2xl p-2 z-50 space-y-1">
+                        <div className="px-2 py-1 border-b border-[#2d2d34] text-[11px] font-serif uppercase tracking-wider text-[#e0d7c6] flex items-center justify-between">
+                          <span className="flex items-center gap-1.5">
+                            <Compass className="w-3 h-3 text-[#c5a059]" />
+                            <span>Select Dungeon Theme</span>
+                          </span>
+                          <span className="text-[9px] font-mono text-[#c5a059]">16x12 Grid</span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setShowBoardMenu(false);
+                            if (window.confirm('Reset all board tiles, spawn fresh monsters, and generate a new random dungeon layout?')) {
+                              onResetBoard('random');
+                            }
+                          }}
+                          className="w-full text-left px-2.5 py-2 rounded text-xs hover:bg-[#25252d] text-[#e0d7c6] flex items-center justify-between group cursor-pointer transition-colors"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-base">🎲</span>
+                            <div>
+                              <div className="font-bold text-[#c5a059] group-hover:text-amber-300">Random Dungeon</div>
+                              <div className="text-[10px] text-stone-400">Rolls a surprise floor layout &amp; encounters</div>
+                            </div>
+                          </div>
+                        </button>
+                        {DUNGEON_THEMES.map((theme) => (
+                          <button
+                            key={theme.id}
+                            onClick={() => {
+                              setShowBoardMenu(false);
+                              if (window.confirm(`Reset board and generate "${theme.name}"?`)) {
+                                onResetBoard(theme.id);
+                              }
+                            }}
+                            className="w-full text-left px-2.5 py-1.5 rounded text-xs hover:bg-[#25252d] text-[#e0d7c6] flex items-start gap-2 group cursor-pointer transition-colors"
+                          >
+                            <span className="text-base mt-0.5">
+                              {theme.id === 'catacombs' ? '🏰' : theme.id === 'obsidian' ? '🌋' : theme.id === 'sunken' ? '🐍' : '⛓️'}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="font-bold text-[#e0d7c6] group-hover:text-[#c5a059] truncate">{theme.name}</div>
+                              <div className="text-[10px] text-stone-400 line-clamp-1">{theme.description}</div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <button
                   onClick={handleQuickRoll}
                   className="px-3 py-1.5 bg-[#c5a059] hover:bg-[#d9b876] text-black font-serif font-bold text-xs uppercase tracking-wider rounded cursor-pointer flex items-center gap-1.5 shadow-sm"

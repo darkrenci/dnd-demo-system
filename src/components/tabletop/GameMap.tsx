@@ -29,7 +29,10 @@ export const GameMap: React.FC<GameMapProps> = ({
   onSelectPlayerToken,
   isDMView = false,
 }) => {
-  const activeChar = players.find(p => p.id === activePlayerId) || players[0];
+  const activeChar = players.find(p => p.id === activePlayerId) 
+    || (activePlayerUsername && players.find(p => p.ownerName?.toLowerCase() === activePlayerUsername.toLowerCase()))
+    || players.find(p => !p.ownerId)
+    || players[0];
   const cols = 16;
   const rows = 12;
 
@@ -146,7 +149,7 @@ export const GameMap: React.FC<GameMapProps> = ({
                 {isRevealed && playersHere.length > 0 && (
                   <div className="relative flex items-center justify-center">
                     {playersHere.map((p, pIdx) => {
-                      const isActiveChar = p.id === activePlayerId;
+                      const isActiveChar = p.id === activePlayerId || p.id === activeChar.id;
                       return (
                         <div
                           key={p.id}

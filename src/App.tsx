@@ -38,7 +38,11 @@ import {
   syncCombatToRoom, 
   syncTilesToRoom, 
   broadcastRoomMessage, 
-  broadcastRoomEvent 
+  broadcastRoomEvent,
+  setActiveLocalHero,
+  joinCampaignRoom,
+  removeCharacterFromRoom,
+  resetRoomToDefaults
 } from './lib/multiplayerService';
 import { Header } from './components/navigation/Header';
 import { LandingPage } from './components/landing/LandingPage';
@@ -51,6 +55,9 @@ import { AuthModal } from './components/auth/AuthModal';
 import { LoginScreen } from './components/auth/LoginScreen';
 
 export default function App() {
+  // Reference to current local hero to guarantee preservation during remote updates
+  const myHeroRef = useRef<Character | null>(null);
+
   // Navigation & Role State - Starts on Login Screen as requested
   const [activeTab, setActiveTab] = useState<'login' | 'landing' | 'dashboard' | 'tabletop' | 'dm' | 'creator'>('login');
   const [currentRole, setCurrentRole] = useState<UserRole>('PLAYER');
@@ -221,8 +228,10 @@ export default function App() {
       ...unassignedCompanions
     ];
 
+    myHeroRef.current = myHero;
+    setActiveLocalHero(myHero);
     setCharacters(mergedList);
-    syncRoomCharacters(targetRoomCode, mergedList);
+    joinCampaignRoom(targetRoomCode, myHero);
 
     handleAddGameEvent({
       id: `evt-enter-${Date.now()}`,
@@ -239,13 +248,15 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    myHeroRef.current = null;
+    setActiveLocalHero(null);
     await logoutUser();
     setUserProfile(null);
     setCharacters(selectableArchetypes);
     setActiveTab('login');
   };
 
-  // 2. Initialize and subscribe to Multiplayer Campaign Room via Supabase Realtime
+  // 2. Initialize and subscribe to Multiplayer Campaign Room via Supabase Realtime & Firestore
   useEffect(() => {
     // Only connect and sync once the user has entered the game
     if (activeTab === 'login') {
@@ -261,11 +272,24 @@ export default function App() {
       combat,
     });
 
-    // Real-time players sync
+    // Real-time players sync with active hero protection
     const unsubPlayers = subscribeToRoomPlayers(roomCode, (remotePlayers) => {
       if (remotePlayers && remotePlayers.length > 0) {
         isSyncingFromRemote.current = true;
-        setCharacters(remotePlayers);
+        let finalPlayers = [...remotePlayers];
+        const currentHero = myHeroRef.current;
+        if (currentHero) {
+          const hasHero = finalPlayers.some(c => 
+            c.id === currentHero.id || 
+            (c.ownerId && currentHero.ownerId && c.ownerId === currentHero.ownerId) ||
+            (c.ownerName && currentHero.ownerName && c.ownerName.toLowerCase() === currentHero.ownerName.toLowerCase())
+          );
+          if (!hasHero) {
+            finalPlayers = [currentHero, ...finalPlayers];
+            syncPlayerToRoom(roomCode, currentHero);
+          }
+        }
+        setCharacters(finalPlayers);
         setTimeout(() => { isSyncingFromRemote.current = false; }, 100);
       }
     });
@@ -316,6 +340,28 @@ export default function App() {
   }, [roomCode, activeTab, userProfile]);
 
   // Synchronized Mutation Handlers
+  const handleRemoveCharacter = async (characterId: string) => {
+    const updated = await removeCharacterFromRoom(roomCode, characterId);
+    setCharacters(updated);
+    handleAddGameEvent({
+      id: `evt-kick-${Date.now()}`,
+      message: `🚫 Character token was removed from campaign room ${roomCode}.`,
+      type: 'combat',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    });
+  };
+
+  const handleResetRoom = async () => {
+    const updated = await resetRoomToDefaults(roomCode, DEMO_CHARACTERS, myHeroRef.current || undefined);
+    setCharacters(updated);
+    handleAddGameEvent({
+      id: `evt-reset-${Date.now()}`,
+      message: `🔄 Campaign room ${roomCode} party was reset to default archetypes. Inactive ghost tokens cleared.`,
+      type: 'combat',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    });
+  };
+
   const handleUpdateCharacters = (chars: Character[]) => {
     setCharacters(chars);
     if (!isSyncingFromRemote.current) {
@@ -551,6 +597,8 @@ export default function App() {
             onUpdateCombat={handleUpdateCombat}
             onAddChatMessage={handleAddChatMessage}
             onAddGameEvent={handleAddGameEvent}
+            onRemoveCharacter={handleRemoveCharacter}
+            onResetRoom={handleResetRoom}
           />
         )}
 
@@ -563,6 +611,8 @@ export default function App() {
             onStartEncounter={handleStartEncounter}
             onBroadcastNarration={handleBroadcastNarration}
             fogRevealedAll={fogRevealedAll}
+            onRemoveCharacter={handleRemoveCharacter}
+            onResetRoom={handleResetRoom}
           />
         )}
       </main>

@@ -12,6 +12,7 @@ import {
   UserRole,
   Campaign,
 } from '../types/rpg';
+import { generateNewDungeonBoard, DUNGEON_THEMES, DungeonTheme } from '../game/mapGenerator';
 
 // Local storage key for fallback guest / demo session
 const LOCAL_USER_STORAGE_KEY = 'tabletop_rpg_user_profile';
@@ -19,6 +20,17 @@ const ROOM_STORAGE_PREFIX = 'tabletop_rpg_room_';
 
 let currentLocalProfile: UserProfile | null = null;
 const authListeners: Set<(profile: UserProfile | null) => void> = new Set();
+
+// Active hero controlled by this client instance (protected from remote overwrite)
+let activeLocalHero: Character | null = null;
+
+export const setActiveLocalHero = (hero: Character | null) => {
+  activeLocalHero = hero;
+};
+
+export const getActiveLocalHero = (): Character | null => {
+  return activeLocalHero;
+};
 
 // Try to restore saved profile from storage
 try {
@@ -447,6 +459,7 @@ const playerListeners: ListenerMap<Character[]> = new Map();
 const monsterListeners: ListenerMap<Monster[]> = new Map();
 const combatListeners: ListenerMap<CombatSession> = new Map();
 const tileListeners: ListenerMap<MapTile[]> = new Map();
+const campaignListeners: ListenerMap<Campaign> = new Map();
 const messageListeners: ListenerMap<ChatMessage[]> = new Map();
 const eventListeners: ListenerMap<GameEvent[]> = new Map();
 
@@ -484,6 +497,15 @@ const getOrCreateSupabaseChannel = (campaignId: string) => {
       .on('broadcast', { event: 'player_sync' }, ({ payload }: { payload: Character }) => {
         handleIncomingBroadcast(campaignId, 'player_sync', payload);
       })
+      .on('broadcast', { event: 'player_remove' }, ({ payload }: { payload: { id: string } }) => {
+        handleIncomingBroadcast(campaignId, 'player_remove', payload);
+      })
+      .on('broadcast', { event: 'room_reset' }, ({ payload }: { payload: { characters: Character[] } }) => {
+        handleIncomingBroadcast(campaignId, 'room_reset', payload);
+      })
+      .on('broadcast', { event: 'board_reset' }, ({ payload }: { payload: any }) => {
+        handleIncomingBroadcast(campaignId, 'board_reset', payload);
+      })
       .on('broadcast', { event: 'monster_sync' }, ({ payload }: { payload: Monster }) => {
         handleIncomingBroadcast(campaignId, 'monster_sync', payload);
       })
@@ -518,7 +540,49 @@ const handleRemoteRoomUpdate = (campaignId: string, data: Partial<RoomData>) => 
   if (!currentRoom) return;
 
   if (data.characters && Array.isArray(data.characters) && data.characters.length > 0) {
-    currentRoom.characters = data.characters;
+    let mergedChars = [...data.characters];
+
+    // CRITICAL: Protect the local player's hero from being dropped by remote snapshots!
+    if (activeLocalHero) {
+      const exists = mergedChars.some((c) => 
+        c.id === activeLocalHero!.id || 
+        (c.ownerId && activeLocalHero!.ownerId && c.ownerId === activeLocalHero!.ownerId) ||
+        (c.ownerName && activeLocalHero!.ownerName && c.ownerName.toLowerCase() === activeLocalHero!.ownerName.toLowerCase())
+      );
+
+      if (!exists) {
+        // Local hero wasn't present in remote characters; prepend and re-sync
+        mergedChars = [activeLocalHero, ...mergedChars];
+        try {
+          const roomDocRef = doc(db, 'campaigns', campaignId);
+          setDoc(roomDocRef, {
+            characters: mergedChars,
+            updatedAt: Date.now(),
+          }, { merge: true }).catch(() => {});
+        } catch {}
+      } else {
+        // Ensure the local player's active hero ID and credentials take precedence
+        mergedChars = mergedChars.map((c) => {
+          if (
+            c.id === activeLocalHero!.id || 
+            (c.ownerId && activeLocalHero!.ownerId && c.ownerId === activeLocalHero!.ownerId) ||
+            (c.ownerName && activeLocalHero!.ownerName && c.ownerName.toLowerCase() === activeLocalHero!.ownerName.toLowerCase())
+          ) {
+            return {
+              ...c,
+              id: activeLocalHero!.id,
+              ownerId: activeLocalHero!.ownerId,
+              ownerName: activeLocalHero!.ownerName,
+              isOnline: true,
+              lastSeen: Date.now(),
+            };
+          }
+          return c;
+        });
+      }
+    }
+
+    currentRoom.characters = mergedChars;
     try {
       localStorage.setItem(ROOM_STORAGE_PREFIX + campaignId, JSON.stringify(currentRoom));
     } catch {}
@@ -538,6 +602,11 @@ const handleRemoteRoomUpdate = (campaignId: string, data: Partial<RoomData>) => 
   if (data.tiles && Array.isArray(data.tiles) && data.tiles.length > 0) {
     currentRoom.tiles = data.tiles;
     tileListeners.get(campaignId)?.forEach((cb) => cb([...data.tiles]));
+  }
+
+  if (data.campaign && currentRoom.campaign) {
+    currentRoom.campaign = { ...currentRoom.campaign, ...data.campaign };
+    campaignListeners.get(campaignId)?.forEach((cb) => cb({ ...currentRoom.campaign }));
   }
 
   if (data.messages && Array.isArray(data.messages) && data.messages.length > 0) {
@@ -568,6 +637,71 @@ const handleIncomingBroadcast = (campaignId: string, eventType: string, payload:
           currentRoom.characters.push(char);
         }
         playerListeners.get(campaignId)?.forEach((cb) => cb([...currentRoom.characters]));
+      }
+      break;
+    }
+    case 'player_remove': {
+      const { id } = payload;
+      if (currentRoom) {
+        currentRoom.characters = currentRoom.characters.filter((c) => c.id !== id);
+        try {
+          localStorage.setItem(ROOM_STORAGE_PREFIX + campaignId, JSON.stringify(currentRoom));
+        } catch {}
+        playerListeners.get(campaignId)?.forEach((cb) => cb([...currentRoom.characters]));
+      }
+      break;
+    }
+    case 'room_reset': {
+      const { characters } = payload;
+      if (currentRoom && Array.isArray(characters)) {
+        currentRoom.characters = characters;
+        try {
+          localStorage.setItem(ROOM_STORAGE_PREFIX + campaignId, JSON.stringify(currentRoom));
+        } catch {}
+        playerListeners.get(campaignId)?.forEach((cb) => cb([...characters]));
+      }
+      break;
+    }
+    case 'board_reset': {
+      const { tiles, monsters, combat, characters, areaName, campaign } = payload;
+      if (currentRoom) {
+        if (tiles) currentRoom.tiles = tiles;
+        if (monsters) currentRoom.monsters = monsters;
+        if (combat) currentRoom.combat = combat;
+        if (campaign) {
+          currentRoom.campaign = campaign;
+        } else if (areaName && currentRoom.campaign) {
+          currentRoom.campaign.currentArea = areaName;
+        }
+        if (characters && Array.isArray(characters)) {
+          let updatedChars = characters;
+          if (activeLocalHero) {
+            updatedChars = characters.map((c: Character) => {
+              if (
+                c.id === activeLocalHero!.id || 
+                (c.ownerId && activeLocalHero!.ownerId && c.ownerId === activeLocalHero!.ownerId) ||
+                (c.ownerName && activeLocalHero!.ownerName && c.ownerName.toLowerCase() === activeLocalHero!.ownerName.toLowerCase())
+              ) {
+                return {
+                  ...c,
+                  id: activeLocalHero!.id,
+                  ownerId: activeLocalHero!.ownerId,
+                  ownerName: activeLocalHero!.ownerName,
+                };
+              }
+              return c;
+            });
+          }
+          currentRoom.characters = updatedChars;
+        }
+        try {
+          localStorage.setItem(ROOM_STORAGE_PREFIX + campaignId, JSON.stringify(currentRoom));
+        } catch {}
+        if (tiles) tileListeners.get(campaignId)?.forEach((cb) => cb([...tiles]));
+        if (monsters) monsterListeners.get(campaignId)?.forEach((cb) => cb([...monsters]));
+        if (combat) combatListeners.get(campaignId)?.forEach((cb) => cb(combat));
+        if (characters) playerListeners.get(campaignId)?.forEach((cb) => cb([...currentRoom.characters]));
+        if (currentRoom.campaign) campaignListeners.get(campaignId)?.forEach((cb) => cb({ ...currentRoom.campaign }));
       }
       break;
     }
@@ -677,6 +811,19 @@ export const initializeRoomIfNotExists = async (
       messages: [],
       events: [],
     };
+  }
+
+  // Ensure current active local hero is present in roomCache
+  if (activeLocalHero && roomCache[campaignId]) {
+    const chars = roomCache[campaignId].characters;
+    const exists = chars.some((c) => 
+      c.id === activeLocalHero!.id || 
+      (c.ownerId && activeLocalHero!.ownerId && c.ownerId === activeLocalHero!.ownerId) ||
+      (c.ownerName && activeLocalHero!.ownerName && c.ownerName.toLowerCase() === activeLocalHero!.ownerName.toLowerCase())
+    );
+    if (!exists) {
+      roomCache[campaignId].characters = [activeLocalHero, ...chars];
+    }
   }
 
   // Initialize transports
@@ -840,13 +987,244 @@ export const subscribeToRoomEvents = (
   };
 };
 
+// Real-time listener for campaign info & area updates
+export const subscribeToRoomCampaign = (
+  campaignId: string,
+  onCampaign: (campaign: Campaign) => void
+) => {
+  if (!campaignListeners.has(campaignId)) {
+    campaignListeners.set(campaignId, new Set());
+  }
+  campaignListeners.get(campaignId)!.add(onCampaign);
+
+  if (roomCache[campaignId]?.campaign) {
+    onCampaign({ ...roomCache[campaignId].campaign });
+  }
+
+  return () => {
+    campaignListeners.get(campaignId)?.delete(onCampaign);
+  };
+};
+
 // --- SYNC MUTATION METHODS (Online multiplayer updates via Supabase Realtime & Cloud Firestore) ---
 
-export const syncPlayerToRoom = async (campaignId: string, character: Character): Promise<void> => {
-  if (!roomCache[campaignId]) return;
+const createDefaultRoom = (campaignId: string, chars: Character[] = []): RoomData => ({
+  campaign: {
+    id: campaignId,
+    name: 'The Lost Dungeon',
+    dmName: 'Master Aldren',
+    hostUid: 'dm-master-aldren',
+    roomCode: campaignId,
+    maxPlayers: 6,
+    playerCount: chars.length || 1,
+    status: 'Active',
+    currentArea: 'Dungeon Level 1',
+  },
+  characters: chars,
+  monsters: [],
+  tiles: [],
+  combat: {
+    isActive: false,
+    round: 1,
+    turnIndex: 0,
+    participants: [],
+    targetMonsterId: null,
+  },
+  messages: [],
+  events: [],
+});
+
+export const joinCampaignRoom = async (campaignId: string, hero: Character): Promise<Character[]> => {
+  setActiveLocalHero(hero);
+
+  if (!roomCache[campaignId]) {
+    roomCache[campaignId] = createDefaultRoom(campaignId, [hero]);
+  }
+
   const currentRoom = roomCache[campaignId];
   const idx = currentRoom.characters.findIndex((c) => 
-    c.id === character.id || (c.ownerId && character.ownerId && c.ownerId === character.ownerId)
+    c.id === hero.id || 
+    (c.ownerId && hero.ownerId && c.ownerId === hero.ownerId) ||
+    (c.ownerName && hero.ownerName && c.ownerName.toLowerCase() === hero.ownerName.toLowerCase())
+  );
+
+  if (idx >= 0) {
+    currentRoom.characters[idx] = { ...currentRoom.characters[idx], ...hero, isOnline: true, lastSeen: Date.now() };
+  } else {
+    currentRoom.characters = [hero, ...currentRoom.characters];
+  }
+
+  try {
+    localStorage.setItem(ROOM_STORAGE_PREFIX + campaignId, JSON.stringify(currentRoom));
+  } catch {}
+
+  playerListeners.get(campaignId)?.forEach((cb) => cb([...currentRoom.characters]));
+  await broadcastToTransport(campaignId, 'player_sync', hero);
+
+  try {
+    const roomDocRef = doc(db, 'campaigns', campaignId);
+    await setDoc(roomDocRef, {
+      characters: currentRoom.characters,
+      updatedAt: Date.now(),
+    }, { merge: true });
+  } catch (err) {
+    console.warn('[Firestore joinCampaignRoom notice]:', err);
+  }
+
+  return [...currentRoom.characters];
+};
+
+export const removeCharacterFromRoom = async (campaignId: string, characterId: string): Promise<Character[]> => {
+  if (!roomCache[campaignId]) return [];
+  const currentRoom = roomCache[campaignId];
+  currentRoom.characters = currentRoom.characters.filter((c) => c.id !== characterId);
+
+  try {
+    localStorage.setItem(ROOM_STORAGE_PREFIX + campaignId, JSON.stringify(currentRoom));
+  } catch {}
+
+  await broadcastToTransport(campaignId, 'player_remove', { id: characterId });
+  playerListeners.get(campaignId)?.forEach((cb) => cb([...currentRoom.characters]));
+
+  try {
+    const roomDocRef = doc(db, 'campaigns', campaignId);
+    await setDoc(roomDocRef, {
+      characters: currentRoom.characters,
+      updatedAt: Date.now(),
+    }, { merge: true });
+  } catch (err) {
+    console.warn('[Firestore removeCharacter notice]:', err);
+  }
+
+  return [...currentRoom.characters];
+};
+
+export const resetRoomToDefaults = async (
+  campaignId: string,
+  defaultArchetypes: Character[],
+  myHero?: Character
+): Promise<Character[]> => {
+  if (!roomCache[campaignId]) {
+    roomCache[campaignId] = createDefaultRoom(campaignId);
+  }
+  const currentRoom = roomCache[campaignId];
+
+  const resetList = myHero
+    ? [myHero, ...defaultArchetypes.filter((c) => c.id !== myHero.id && c.name.toLowerCase() !== myHero.name.toLowerCase())]
+    : [...defaultArchetypes];
+
+  currentRoom.characters = resetList;
+
+  try {
+    localStorage.setItem(ROOM_STORAGE_PREFIX + campaignId, JSON.stringify(currentRoom));
+  } catch {}
+
+  playerListeners.get(campaignId)?.forEach((cb) => cb([...currentRoom.characters]));
+  await broadcastToTransport(campaignId, 'room_reset', { characters: resetList });
+
+  try {
+    const roomDocRef = doc(db, 'campaigns', campaignId);
+    await setDoc(roomDocRef, {
+      characters: resetList,
+      updatedAt: Date.now(),
+    }, { merge: true });
+  } catch (err) {
+    console.warn('[Firestore resetRoom notice]:', err);
+  }
+
+  return resetList;
+};
+
+export const resetBoardAndCreateNew = async (
+  campaignId: string,
+  themeIdOrRandom?: string,
+  currentCharacters?: Character[]
+): Promise<{
+  tiles: MapTile[];
+  monsters: Monster[];
+  characters: Character[];
+  combat: CombatSession;
+  areaName: string;
+}> => {
+  if (!roomCache[campaignId]) {
+    roomCache[campaignId] = createDefaultRoom(campaignId);
+  }
+  const currentRoom = roomCache[campaignId];
+
+  // Prioritize active party characters currently in the room
+  const partyToUse = (currentCharacters && currentCharacters.length > 0)
+    ? currentCharacters
+    : currentRoom.characters;
+
+  const generated = generateNewDungeonBoard(themeIdOrRandom, partyToUse);
+
+  currentRoom.tiles = generated.tiles;
+  currentRoom.monsters = generated.monsters;
+  currentRoom.combat = generated.combat;
+  currentRoom.characters = generated.characters;
+  if (currentRoom.campaign) {
+    currentRoom.campaign = {
+      ...currentRoom.campaign,
+      currentArea: generated.areaName,
+    };
+  }
+
+  try {
+    localStorage.setItem(ROOM_STORAGE_PREFIX + campaignId, JSON.stringify(currentRoom));
+  } catch {}
+
+  // Broadcast to all connected clients & tabs
+  await broadcastToTransport(campaignId, 'board_reset', {
+    tiles: generated.tiles,
+    monsters: generated.monsters,
+    combat: generated.combat,
+    characters: generated.characters,
+    areaName: generated.areaName,
+    campaign: currentRoom.campaign,
+  });
+
+  // Trigger local listeners
+  tileListeners.get(campaignId)?.forEach((cb) => cb([...generated.tiles]));
+  monsterListeners.get(campaignId)?.forEach((cb) => cb([...generated.monsters]));
+  combatListeners.get(campaignId)?.forEach((cb) => cb(generated.combat));
+  playerListeners.get(campaignId)?.forEach((cb) => cb([...generated.characters]));
+  if (currentRoom.campaign) {
+    campaignListeners.get(campaignId)?.forEach((cb) => cb({ ...currentRoom.campaign }));
+  }
+
+  // Persist to Cloud Firestore
+  try {
+    const roomDocRef = doc(db, 'campaigns', campaignId);
+    await setDoc(roomDocRef, {
+      tiles: generated.tiles,
+      monsters: generated.monsters,
+      combat: generated.combat,
+      characters: generated.characters,
+      campaign: currentRoom.campaign,
+      updatedAt: Date.now(),
+    }, { merge: true });
+  } catch (err) {
+    console.warn('[Firestore resetBoard notice]:', err);
+  }
+
+  return {
+    tiles: generated.tiles,
+    monsters: generated.monsters,
+    characters: generated.characters,
+    combat: generated.combat,
+    areaName: generated.areaName,
+  };
+};
+
+export const syncPlayerToRoom = async (campaignId: string, character: Character): Promise<void> => {
+  if (!roomCache[campaignId]) {
+    roomCache[campaignId] = createDefaultRoom(campaignId, [character]);
+  }
+  const currentRoom = roomCache[campaignId];
+  const idx = currentRoom.characters.findIndex((c) => 
+    c.id === character.id || 
+    (c.ownerId && character.ownerId && c.ownerId === character.ownerId) ||
+    (c.ownerName && character.ownerName && c.ownerName.toLowerCase() === character.ownerName.toLowerCase())
   );
 
   if (idx >= 0) {
@@ -875,7 +1253,9 @@ export const syncPlayerToRoom = async (campaignId: string, character: Character)
 };
 
 export const syncRoomCharacters = async (campaignId: string, characters: Character[]): Promise<void> => {
-  if (!roomCache[campaignId]) return;
+  if (!roomCache[campaignId]) {
+    roomCache[campaignId] = createDefaultRoom(campaignId, [...characters]);
+  }
   const currentRoom = roomCache[campaignId];
   currentRoom.characters = [...characters];
 
