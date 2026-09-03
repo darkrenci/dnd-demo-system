@@ -1,0 +1,55 @@
+{
+  "$schema": "https://firebase.google.com/docs/firestore",
+  "entities": {
+    "users": {
+      "title": "User Profile",
+      "description": "Registered player or DM user profile",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["PLAYER", "DM"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "characters": {
+      "title": "Character",
+      "description": "Player character sheet entity",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "name": { "type": "string" },
+        "race": { "type": "string" },
+        "classType": { "type": "string" },
+        "level": { "type": "number" },
+        "hp": { "type": "number" },
+        "maxHp": { "type": "number" },
+        "mp": { "type": "number" },
+        "maxMp": { "type": "number" },
+        "ac": { "type": "number" }
+      },
+      "required": ["id", "ownerId", "name", "race", "classType", "hp", "maxHp"]
+    },
+    "campaigns": {
+      "title": "Campaign Room",
+      "description": "Multiplayer tabletop room session with synchronized map and combat",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "hostUid": { "type": "string" },
+        "dmName": { "type": "string" },
+        "status": { "type": "string" },
+        "currentArea": { "type": "string" },
+        "turnIndex": { "type": "number" },
+        "round": { "type": "number" },
+        "isCombatActive": { "type": "boolean" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "hostUid"]
+    }
+  }
+}

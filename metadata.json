@@ -1,0 +1,6 @@
+{
+  "name": "Tabletop RPG Demo",
+  "description": "Online multiplayer fantasy tabletop RPG virtual tabletop and game engine demo with character creation, grid map, dice, and server-authoritative combat.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #0c0c0e;
+    color: #e0d7c6;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  
+  .font-serif {
+    font-family: 'Cinzel', Georgia, Cambria, 'Times New Roman', Times, serif;
+  }
+}
